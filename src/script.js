@@ -102,9 +102,9 @@ const createParticlePositions = (forContinents) => {
   const xScale = scale * aspectRatio;
   const yScale = scale;
 
-  const baseSize = Math.max(1, sampleRate * 0.5);
+  const baseSize = Math.max(1, sampleRate );
   const minSize = baseSize * 0.5;
-  const maxSize = baseSize * 1.5;
+  const maxSize = baseSize * 2
 
   for (let y = 0; y < imageHeight; y += sampleRate) {
     for (let x = 0; x < imageWidth; x += sampleRate) {
@@ -125,7 +125,9 @@ const createParticlePositions = (forContinents) => {
         rotation.push(Math.random() * Math.PI * 2);
         speeds.push(Math.random() * 0.002 + 0.0001);
         
-        sizes.push(minSize + Math.random() * (maxSize - minSize));
+        // sizes.push(minSize + Math.random() * (maxSize - minSize));
+        sizes.push(Math.random() * 3 + Math.pow(sampleRate, .6));
+        
         
         const shapeIndex = debugObject.mixShapes ? Math.floor(Math.random() * 4) : 3;
         shapeIndices.push(shapeIndex);
