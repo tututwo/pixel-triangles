@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import GUI from "lil-gui";
+import gsap from "gsap";
 import vertexShader from "./shader/vertexShader.glsl";
 import fragmentShader from "./shader/fragmentShader.glsl";
 
@@ -12,8 +13,10 @@ const gui = new GUI();
 const debugObject = {
   showContinents: true,
   enableDepth: false,
-  sampleRate: 3,
-  intensity: 1.0,
+  sampleRate: 10,
+  intensity: 1.8,
+  morphProgress: 0.0,
+  mixShapes: false,
 };
 
 // Canvas
@@ -61,7 +64,12 @@ const getRandomColor = (colorArray) => {
  * Textures
  */
 const textureLoader = new THREE.TextureLoader();
-const particleTexture = textureLoader.load("/textures/tri.png");
+const shapeTextures = [
+    textureLoader.load('/textures/circle.png'),
+    textureLoader.load('/textures/rect.png'),
+    textureLoader.load('/textures/star.png'),
+    textureLoader.load('/textures/tri.png')
+];
 
 /**
  * Particles
@@ -79,23 +87,24 @@ const getPixel = (x, y) => {
   return [imageData.data[i], imageData.data[i + 1], imageData.data[i + 2]];
 };
 
-// Function to create particles
-const createParticles = (showContinents) => {
-  // Clear previous arrays
+// Function to create particle positions
+const createParticlePositions = (forContinents) => {
   const positions = [];
   const colors = [];
   const opacities = [];
   const rotation = [];
   const speeds = [];
-  const particleSize = [];
+  const sizes = [];
+  const shapeIndices = [];
 
-  // Use sampleRate from debugObject
   const sampleRate = Math.max(1, Math.floor(debugObject.sampleRate));
-
-  // Calculate scaling factors to maintain aspect ratio
   const scale = 10;
   const xScale = scale * aspectRatio;
   const yScale = scale;
+
+  const baseSize = Math.max(1, sampleRate * 0.5);
+  const minSize = baseSize * 0.5;
+  const maxSize = baseSize * 1.5;
 
   for (let y = 0; y < imageHeight; y += sampleRate) {
     for (let x = 0; x < imageWidth; x += sampleRate) {
@@ -103,10 +112,9 @@ const createParticles = (showContinents) => {
       const brightness =
         (imageData.data[i] + imageData.data[i + 1] + imageData.data[i + 2]) / 3;
 
-      // Check if pixel should be included based on debug setting
       if (
-        (showContinents && brightness < 128) ||
-        (!showContinents && brightness >= 128)
+        (forContinents && brightness < 128) ||
+        (!forContinents && brightness >= 128)
       ) {
         const xPos = (x / imageWidth - 0.5) * xScale;
         const yPos = -(y / imageHeight - 0.5) * yScale;
@@ -114,58 +122,133 @@ const createParticles = (showContinents) => {
 
         positions.push(xPos, yPos, zPos);
         opacities.push(1.0);
-        particleSize.push(Math.random() * 80 + 10 * debugObject.sampleRate);
         rotation.push(Math.random() * Math.PI * 2);
         speeds.push(Math.random() * 0.002 + 0.0001);
+        
+        sizes.push(minSize + Math.random() * (maxSize - minSize));
+        
+        const shapeIndex = debugObject.mixShapes ? Math.floor(Math.random() * 4) : 3;
+        shapeIndices.push(shapeIndex);
 
-        // Assign colors from palettes
         const [r, g, b] = getRandomColor(
-          showContinents ? continentColors : oceanColors
+          forContinents ? continentColors : oceanColors
         );
         colors.push(r, g, b);
       }
     }
   }
 
-  // Create geometry
-  const particlesGeometry = new THREE.BufferGeometry();
-  particlesGeometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(positions, 3)
-  );
-  particlesGeometry.setAttribute(
-    "particleColor",
-    new THREE.Float32BufferAttribute(colors, 3)
-  );
-  particlesGeometry.setAttribute(
-    "opacity",
-    new THREE.Float32BufferAttribute(opacities, 1)
-  );
-  particlesGeometry.setAttribute(
-    "rotation",
-    new THREE.Float32BufferAttribute(rotation, 1)
-  );
-  particlesGeometry.setAttribute(
-    "speed",
-    new THREE.Float32BufferAttribute(speeds, 1)
-  );
-  particlesGeometry.setAttribute(
-    "particleSize",
-    new THREE.Float32BufferAttribute(particleSize, 1)
+  return { positions, colors, opacities, rotation, speeds, sizes, shapeIndices };
+};
+
+// Function to create and setup particles
+const setupParticles = () => {
+  // Generate both position sets
+  const continentData = createParticlePositions(true);
+  const oceanData = createParticlePositions(false);
+
+  // Use the larger set as the base and pad the smaller one
+  const maxCount = Math.max(
+    continentData.positions.length / 3,
+    oceanData.positions.length / 3
   );
 
-  // Create material
-  const particlesMaterial = new THREE.ShaderMaterial({
+  // Pad the smaller array with repeated positions
+  const padArray = (array, itemSize, targetLength) => {
+    const paddedArray = new Float32Array(targetLength * itemSize);
+    const originalLength = array.length / itemSize;
+
+    for (let i = 0; i < targetLength; i++) {
+      const sourceIndex = i % originalLength;
+      for (let j = 0; j < itemSize; j++) {
+        paddedArray[i * itemSize + j] = array[sourceIndex * itemSize + j];
+      }
+    }
+
+    return paddedArray;
+  };
+
+  // Create geometry with both position sets
+  const geometry = new THREE.BufferGeometry();
+
+  // Set all attributes with padded arrays
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+      padArray(continentData.positions, 3, maxCount),
+      3
+    )
+  );
+  geometry.setAttribute(
+    "targetPosition",
+    new THREE.Float32BufferAttribute(
+      padArray(oceanData.positions, 3, maxCount),
+      3
+    )
+  );
+  geometry.setAttribute(
+    "particleColor",
+    new THREE.Float32BufferAttribute(
+      padArray(continentData.colors, 3, maxCount),
+      3
+    )
+  );
+  geometry.setAttribute(
+    "targetColor",
+    new THREE.Float32BufferAttribute(
+      padArray(oceanData.colors, 3, maxCount),
+      3
+    )
+  );
+  geometry.setAttribute(
+    "opacity",
+    new THREE.Float32BufferAttribute(
+      padArray(continentData.opacities, 1, maxCount),
+      1
+    )
+  );
+  geometry.setAttribute(
+    "rotation",
+    new THREE.Float32BufferAttribute(
+      padArray(continentData.rotation, 1, maxCount),
+      1
+    )
+  );
+  geometry.setAttribute(
+    "speed",
+    new THREE.Float32BufferAttribute(
+      padArray(continentData.speeds, 1, maxCount),
+      1
+    )
+  );
+  geometry.setAttribute(
+    "size",
+    new THREE.Float32BufferAttribute(
+      padArray(continentData.sizes, 1, maxCount),
+      1
+    )
+  );
+  geometry.setAttribute(
+    'shapeIndex',
+    new THREE.Float32BufferAttribute(
+      padArray(continentData.shapeIndices, 1, maxCount),
+      1
+    )
+  );
+
+  // Create material with base particle size adjusted for sample rate
+  const material = new THREE.ShaderMaterial({
     vertexShader,
     fragmentShader,
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
-
     uniforms: {
-      particleTexture: { value: particleTexture },
+      shapeTextures: { value: shapeTextures },
       particleIntencity: { value: debugObject.intensity },
+      particleSize: { value: 20.0 },
       time: { value: 0.0 },
+      uProgress: { value: debugObject.morphProgress },
     },
   });
 
@@ -176,15 +259,9 @@ const createParticles = (showContinents) => {
     particles.material.dispose();
   }
 
-  // Create new points
-  particles = new THREE.Points(particlesGeometry, particlesMaterial);
+  // Create points
+  particles = new THREE.Points(geometry, material);
   scene.add(particles);
-
-  console.log(
-    `Created ${positions.length / 3} particles in ${
-      showContinents ? "continent" : "ocean"
-    } mode`
-  );
 };
 
 // Load and process the image
@@ -213,8 +290,8 @@ img.onload = () => {
   // Get image data
   imageData = tempContext.getImageData(0, 0, img.width, img.height);
 
-  // Create initial particles
-  createParticles(debugObject.showContinents);
+  // Setup particles
+  setupParticles();
 
   // GUI Controls
   const particleFolder = gui.addFolder("Particles");
@@ -222,13 +299,23 @@ img.onload = () => {
     .add(debugObject, "showContinents")
     .name("Show Continents")
     .onChange(() => {
-      createParticles(debugObject.showContinents);
+      const currentProgress = particles.material.uniforms.uProgress.value;
+      const targetProgress = currentProgress < 0.5 ? 1.0 : 0.0;
+      
+      gsap.to(debugObject, {
+        morphProgress: targetProgress,
+        duration: 1.5,
+        ease: "power1.inOut",
+        onUpdate: () => {
+          particles.material.uniforms.uProgress.value = debugObject.morphProgress;
+        }
+      });
     });
   particleFolder
     .add(debugObject, "enableDepth")
     .name("Enable Depth")
     .onChange(() => {
-      createParticles(debugObject.showContinents);
+      setupParticles();
     });
   particleFolder
     .add(debugObject, "intensity")
@@ -249,7 +336,14 @@ img.onload = () => {
     .step(1)
     .name("Sample Rate")
     .onChange(() => {
-      createParticles(debugObject.showContinents);
+      setupParticles();
+    });
+
+  particleFolder
+    .add(debugObject, "mixShapes")
+    .name("Mix Shapes")
+    .onChange(() => {
+      setupParticles();
     });
 };
 
@@ -316,8 +410,17 @@ const tick = () => {
     particles.material.uniforms.time.value = elapsedTime;
 
     const positionArray = particles.geometry.attributes.position.array;
+    const targetPositionArray = particles.geometry.attributes.targetPosition.array;
     const rotationArray = particles.geometry.attributes.rotation.array;
     const speedArray = particles.geometry.attributes.speed.array;
+    const progress = particles.material.uniforms.uProgress.value;
+
+    // Pre-calculate constants for this frame
+    const isInContinentMode = progress < 0.5;
+    const worldToImageX = imageWidth / (10 * aspectRatio);
+    const worldToImageY = imageHeight / 10;
+    const halfImageWidth = imageWidth * 0.5;
+    const halfImageHeight = imageHeight * 0.5;
 
     // Update positions and rotations
     for (let i = 0; i < positionArray.length; i += 3) {
@@ -325,55 +428,57 @@ const tick = () => {
       const speed = speedArray[index];
       let rotation = rotationArray[index];
 
-      // Current position
-      let x = positionArray[i];
-      let y = positionArray[i + 1];
-      let z = positionArray[i + 2];
+      // Get current position from the active array
+      const activeArray = isInContinentMode ? positionArray : targetPositionArray;
+      let x = activeArray[i];
+      let y = activeArray[i + 1];
+      let z = activeArray[i + 2];
 
-      // Convert world position to image coordinates
-      const tx = (x / (10 * aspectRatio) + 0.5) * imageWidth;
-      const ty = (-y / 10 + 0.5) * imageHeight;
+      // Fast world to image coordinate conversion
+      const tx = (x * worldToImageX) + halfImageWidth;
+      const ty = (-y * worldToImageY) + halfImageHeight;
 
-      // Check boundaries and image data
+      // Optimized boundary and collision check
+      let shouldBounce = false;
+      
       if (tx <= 0 || tx >= imageWidth || ty <= 0 || ty >= imageHeight) {
-        rotation += Math.PI;
+        shouldBounce = true;
       } else {
         const pixel = getPixel(Math.floor(tx), Math.floor(ty));
-        // Adjust collision based on current mode
-        const shouldBounce = debugObject.showContinents
-          ? pixel[0] > 128 // In continent mode, bounce off white areas
-          : pixel[0] < 128; // In ocean mode, bounce off black areas
-
-        if (shouldBounce) {
-          rotation += Math.PI;
-        }
+        shouldBounce = isInContinentMode ? 
+          pixel[0] > 128 : // Bounce off white in continent mode
+          pixel[0] < 128;  // Bounce off black in ocean mode
       }
 
-      // Update position based on rotation and speed
-      x += Math.cos(rotation) * speed;
-      y += Math.sin(rotation) * speed;
+      if (shouldBounce) {
+        rotation += Math.PI;
+      }
 
-      // Z oscillation only if depth is enabled
+      // Update position
+      const moveX = Math.cos(rotation) * speed;
+      const moveY = Math.sin(rotation) * speed;
+      x += moveX;
+      y += moveY;
+
+      // Optional depth effect
       if (debugObject.enableDepth) {
-        z = positionArray[i + 2] + Math.sin(elapsedTime * 0.5 + x + y) * 0.002;
-
-        // Constrain Z depth
-        if (z > 1.0 || z < -1.0) {
-          z = Math.sign(z) * 1.0;
-        }
-      } else {
-        z = 0;
+        z += Math.sin(elapsedTime * 0.5 + x + y) * 0.002;
+        z = Math.max(-1.0, Math.min(1.0, z));
       }
 
-      // Store updated values
-      positionArray[i] = x;
-      positionArray[i + 1] = y;
-      positionArray[i + 2] = z;
+      // Store in the active array
+      activeArray[i] = x;
+      activeArray[i + 1] = y;
+      activeArray[i + 2] = z;
       rotationArray[index] = rotation;
     }
 
-    // Mark attributes as needing update
-    particles.geometry.attributes.position.needsUpdate = true;
+    // Update only the active attributes
+    if (isInContinentMode) {
+      particles.geometry.attributes.position.needsUpdate = true;
+    } else {
+      particles.geometry.attributes.targetPosition.needsUpdate = true;
+    }
     particles.geometry.attributes.rotation.needsUpdate = true;
   }
 
@@ -386,5 +491,10 @@ const tick = () => {
   // Call tick again on the next frame
   window.requestAnimationFrame(tick);
 };
+
+// Helper function for linear interpolation
+function mix(a, b, t) {
+  return a * (1 - t) + b * t;
+}
 
 tick();
